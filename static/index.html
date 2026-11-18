@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Infra2Code AI</title>
+<style>
+:root{--bg:#EDF1F6;--panel:#fff;--ink:#13203B;--mute:#5B6980;--line:#C6D0DE;--acc:#2447F5;--ok:#1B8A57;--warn:#C96A00;--code:#0F1A30}
+@media(prefers-color-scheme:dark){:root{--bg:#0E1626;--panel:#142038;--ink:#E6ECF8;--mute:#93A1BA;--line:#2A3A58;--acc:#6F8BFF;--ok:#4CC38A;--warn:#F0A04B;--code:#0A1120}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:32px 20px 60px}
+h1{font-size:40px;letter-spacing:-.03em;margin:0}h1 span{color:var(--acc)}
+h2{font-size:18px;margin:18px 0 8px}
+.sub{color:var(--mute);margin:6px 0 22px}
+.card{background:var(--panel);border:1.5px solid var(--ink);border-radius:4px;padding:18px;margin-bottom:16px}
+textarea{width:100%;min-height:110px;background:var(--bg);color:var(--ink);border:1.5px solid var(--line);border-radius:3px;padding:12px;font:inherit}
+.row{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
+select,button{font:inherit;padding:9px 14px;border-radius:3px;border:1.5px solid var(--ink);background:var(--panel);color:var(--ink);cursor:pointer}
+#go{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+button:disabled{opacity:.5}
+#msg{color:var(--mute)}
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs button.on{background:var(--ink);color:var(--bg)}
+.tier{margin:4px 0}.tier small{color:var(--mute);text-transform:uppercase;letter-spacing:.06em}
+.nodes{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
+.node{border:1.5px solid var(--ink);border-radius:4px;padding:8px 14px;background:var(--bg)}
+.node.sec{border-color:var(--ok);box-shadow:inset 0 0 0 1px var(--ok)}
+.down{color:var(--acc);font-size:22px;margin:2px 0 2px 18px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:700px){.cols{grid-template-columns:1fr}}
+li{margin-bottom:8px}li span,.note{color:var(--mute);font-size:14px}
+li.hi b{color:var(--warn)}li.fx b{color:var(--ok)}
+.files{display:grid;grid-template-columns:200px 1fr;gap:14px}
+@media(max-width:700px){.files{grid-template-columns:1fr}}
+.files div{display:flex;flex-direction:column;gap:4px}
+.files button{text-align:left;font-family:monospace;font-size:13px}.files button.on{border-color:var(--acc);color:var(--acc)}
+pre{margin:0;background:var(--code);color:#DCE6F7;padding:14px;border-radius:3px;overflow:auto;max-height:480px;font-size:13px}
+.big{font-size:56px;font-weight:800;color:var(--acc);letter-spacing:-.03em}.big small{font-size:18px;color:var(--mute);font-weight:400}
+</style>
+</head>
+<body>
+<main>
+  <h1>Infra2Code <span>AI</span></h1>
+  <p class="sub">Describe your AWS infrastructure. Get least-cost, secure Terraform with the architecture, flow and cost.</p>
+  <section class="card">
+    <textarea id="req" placeholder="Example: A web app with two servers behind a load balancer and a database."></textarea>
+    <div class="row">
+      <select id="env"><option value="dev">Dev or test</option><option value="prod">Production</option></select>
+      <button id="go">Generate</button><span id="msg"></span>
+    </div>
+  </section>
+  <section id="out" hidden><div class="tabs" id="tabs"></div><div id="pane" class="card"></div></section>
+</main>
+<script>
+let R=null,cur="main.tf";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const TABS=[["arch","Architecture"],["code","Code"],["cost","Cost"]];
+
+$("go").onclick=async()=>{
+  const requirement=$("req").value.trim();
+  if(requirement.length<10){$("msg").textContent="Write a sentence or more.";return}
+  $("go").disabled=true;$("msg").textContent="Generating, this takes a minute...";
+  try{
+    const r=await fetch("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({requirement,env:$("env").value})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(typeof d.detail=="string"?d.detail:"Request failed");
+    R=d;cur="main.tf";$("out").hidden=false;show("arch");$("msg").textContent="Done.";
+  }catch(e){$("msg").textContent="Error: "+e.message}
+  $("go").disabled=false;
+};
+
+function show(t){
+  $("tabs").innerHTML=TABS.map(([id,n])=>`<button class="${id==t?"on":""}" data-t="${id}">${n}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>show(b.dataset.t));
+  $("pane").innerHTML={arch,code,cost}[t]();
+  document.querySelectorAll("[data-f]").forEach(b=>b.onclick=()=>{cur=b.dataset.f;show("code")});
+}
+
+function arch(){
+  const sec=R.security||[],locked=new Set(sec.map(s=>s.applies_to));
+  const tiers=((R.arch&&R.arch.tiers)||[]).map(t=>`<div class="tier"><small>${esc(t.name)}</small><div class="nodes">${(t.nodes||[]).map(n=>`<span class="node${locked.has(n)?" sec":""}">${locked.has(n)?"🔒 ":""}${esc(n)}</span>`).join("")}</div></div>`).join('<div class="down">↓</div>');
+  const flow=(R.flow||[]).map(f=>`<li><b>${esc(f.from)}</b> → <b>${esc(f.to)}</b><br><span>${esc(f.what)}</span></li>`).join("");
+  const sc=sec.map(s=>`<li><b>${esc(s.control)}</b> on ${esc(s.applies_to)}<br><span>${esc(s.detail)}</span></li>`).join("");
+  const risks=(R.findings||[]).map(f=>`<li class="${esc(f.level)}"><b>${esc(f.title)}</b><br><span>${esc(f.detail)}</span></li>`).join("");
+  return `<h2>Architecture (🔒 marks protected parts)</h2>${tiers}<div class="cols"><div><h2>Flow</h2><ol>${flow}</ol></div><div><h2>Security controls</h2><ul>${sc}</ul><h2>Risks and fixes</h2><ul>${risks||"<li>None reported</li>"}</ul></div></div>`;
+}
+
+function code(){
+  const names=Object.keys(R.files);
+  return `<div class="files"><div>${names.map(f=>`<button class="${f==cur?"on":""}" data-f="${esc(f)}">${esc(f)}</button>`).join("")}</div><pre>${esc(R.files[cur])}</pre></div>`;
+}
+
+function cost(){
+  const c=R.cost||{},m=Number(c.monthly_usd)||0,t=Number(c.typical_usd)||0;
+  const items=(c.items||[]).map(i=>`<li><b>-$${esc(i.saving_usd)}</b> ${esc(i.title)} <em>(efficiency impact: ${esc(i.efficiency_impact)})</em><br><span>${esc(i.why)}</span></li>`).join("");
+  return `<div class="big">$${m}<small> per month</small></div><p>A typical default build would cost about $${t}.</p><ul>${items}</ul><p class="note">AI estimate. ${esc(c.basis)} Check real prices with Infracost before deploying.</p>`;
+}
+</script>
+</body>
+</html>
